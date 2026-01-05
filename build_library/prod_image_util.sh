@@ -273,6 +273,67 @@ create_prod_sysexts() {
   done
 }
 
+create_oem_sysexts() {
+  local image_name="$1"
+  local image_sysext_base="${image_name%.bin}_sysext.squashfs"
+  local overlay_path
+  overlay_path=$(portageq get_repo_path / coreos-overlay)
+
+  for sysext in "${OEM_SYSEXTS[@]}"; do
+    local name metapkg useflags arches
+    IFS="|" read -r name metapkg useflags arches <<< "$sysext"
+
+    if [[ "${name}" != oem-* ]]; then
+      die "OEM sysext name must start with 'oem-', got '${name}'"
+    fi
+
+    local arch_array=(${arches//,/ })
+
+    if [[ -n "$arches" ]]; then
+      local should_skip=1
+      for arch in "${arch_array[@]}"; do
+        if [[ $arch == "$ARCH" ]]; then
+          should_skip=0
+        fi
+      done
+      if [[ $should_skip -eq 1 ]]; then
+        continue
+      fi
+    fi
+
+    # Check for manglefs script in the package's files directory
+    local mangle_script="${overlay_path}/${metapkg}/files/manglefs.sh"
+    if [[ ! -x "${mangle_script}" ]]; then
+      mangle_script=
+    fi
+
+    sudo rm -f "${BUILD_DIR}/${name}.raw" \
+        "${BUILD_DIR}/flatcar_test_update-${name}.gz" \
+        "${BUILD_DIR}/${name}_"*
+
+    info "Building OEM sysext ${name} with USE=${useflags}"
+    # The --install_root_basename="${name}-oem-sysext-rootfs" flag is
+    # important - it sets the name of a rootfs directory, which is
+    # used to determine the package target in
+    # coreos/base/profile.bashrc
+    #
+    # OEM sysexts use no compression here since they will be stored
+    # in a compressed OEM partition.
+    USE="${useflags}" sudo -E "${SCRIPT_ROOT}/build_sysext" --board="${BOARD}" \
+        --squashfs_base="${BUILD_DIR}/${image_sysext_base}" \
+        --image_builddir="${BUILD_DIR}" \
+        --metapkgs="${metapkg}" \
+        --install_root_basename="${name}-oem-sysext-rootfs" \
+        --compression=none \
+        ${mangle_script:+--manglefs_script="${mangle_script}"} \
+        "${name}"
+    delta_generator \
+      -private_key "/usr/share/update_engine/update-payload-key.key.pem" \
+      -new_image "${BUILD_DIR}/${name}.raw" \
+      -out_file "${BUILD_DIR}/flatcar_test_update-${name}.gz"
+  done
+}
+
 sbsign_prod_image() {
   local image_name="$1"
   local disk_layout="$2"
